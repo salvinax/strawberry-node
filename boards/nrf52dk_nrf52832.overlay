@@ -1,0 +1,144 @@
+/* boards/<your_board>.overlay */
+
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SCL, 0, 27)>,
+				<NRF_PSEL(TWIM_SDA, 0, 26)>;
+                bias-pull-up;
+
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SCL, 0, 27)>,
+				<NRF_PSEL(TWIM_SDA, 0, 26)>;
+			low-power-enable;
+		};
+	};
+};
+
+
+&i2c0 {
+	status = "okay";
+    compatible = "nordic,nrf-twim";
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+   
+
+	ads1015: ads1015@48 {
+		compatible = "i2c-device";
+		status = "okay";
+		reg = <0x48>;
+	};
+
+	mlx90614: mlx90614@5a {
+		compatible = "i2c-device";
+		status = "okay";
+		reg = <0x5a>;
+	};
+
+	sen0546: sen0546@40 {
+		compatible = "i2c-device";
+		status = "okay";
+		reg = <0x40>;
+	};
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+
+ / {
+	zephyr,user {
+		io-channels = <&adc 0>, <&adc 1>, <&adc 2>, <&adc 3>, <&adc 4>;
+		//pump_relay_gpios = <&gpio0 17 GPIO_ACTIVE_LOW>; for pcb
+		pump_relay_gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+		
+	};
+
+	hx711: hx711 {
+		compatible = "avia,hx711";
+		status = "okay";
+		label = "HX711";
+		dout-gpios = <&gpio0 22 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+		sck-gpios  = <&gpio0 23 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&adc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@0 {
+		// par sensor
+		// add shunt resistor
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN1>; /* nRF52832: P0.03 */
+		zephyr,resolution = <12>;
+	};
+
+	channel@1 {
+		// wind tmp
+		// voltage divider
+		// up to 3.3v input with voltage divider
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN2>; /* nRF52832: P0.04 */
+		zephyr,resolution = <12>;
+	};
+
+	// channel@2 {
+	// 	// not used for now - OUT pin wind sensor
+	// 	reg = <2>;
+	// 	zephyr,gain = "ADC_GAIN_1_6";
+	// 	zephyr,reference = "ADC_REF_INTERNAL";
+	// 	zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+	// 	zephyr,input-positive = <NRF_SAADC_AIN4>; /* nRF52832: P0.28 */
+	// 	zephyr,resolution = <12>;
+	// };
+
+	channel@2 {
+		// wind rv
+		// voltage divider
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN5>; /* nRF52832: P0.29 */
+		zephyr,resolution = <12>;
+	};
+
+	channel@3 {
+		//root temp
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN6>; /* nRF52832: P0.30 */
+		zephyr,resolution = <12>;
+	};
+
+	channel@4 {
+		// pyrg-thermistor
+		reg = <4>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AIN7>; /* nRF52832: P0.31 */
+		zephyr,resolution = <12>;
+	};
+};
+&pwm0_default {
+	group1 {
+		psels = <NRF_PSEL(PWM_OUT0, 0, 17)>;
+		nordic,invert;
+	};
+};
