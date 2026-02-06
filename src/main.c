@@ -5,7 +5,7 @@
 
 #include "drv_mlx90614.h"
 #include "drv_analog.h"
-#include "ble_lys.h"
+#include "ble_util.h"
 #include "drv_sen0546.h"
 #include "drv_ads1015.h"
 #include "drv_load_point.h"
@@ -24,32 +24,8 @@ static struct wind_sample    g_wind;
 static struct par_sample   g_par;
 static struct load_sample g_load;
 
+static const char NODE_NAME[NODE_NAME_LENGTH] = "nodeA";
 
-//  INTIALIZE PUMP CTRL PIN
-static const struct gpio_dt_spec pump =GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), pump_relay_gpios);
-
-// gpio set as active low
-void pump_init(void)
-{
-    gpio_pin_configure_dt(&pump, GPIO_OUTPUT_INACTIVE); // output pin and intialize to logic 0 (high)
-}
-
-// void pump_on(void)  { gpio_pin_set_dt(&pump, 1); } // drives LOW
-// void pump_off(void) { gpio_pin_set_dt(&pump, 0); } // drives HIGH
-// pump is active high on prototype
-void pump_on(void)  { 
-    gpio_pin_set_dt(&pump, 1); 
-    LOG_INF("PUMP ON");
-    int level = gpio_pin_get_dt(&pump);
-    LOG_INF("pump pin level=%d", level);
-}
-
-void pump_off(void) { 
-    gpio_pin_set_dt(&pump, 0);
-    LOG_INF("PUMP OFF"); 
-    int level = gpio_pin_get_dt(&pump);
-    LOG_INF("pump pin level=%d", level);
-}
 
 static const struct device *const i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
@@ -92,10 +68,29 @@ static inline int16_t s16_q(float x, float scale)
 }
 
 
+static inline void fill_node_name(char out[NODE_NAME_LENGTH])
+{
+    memset(out, 0, NODE_NAME_LENGTH);
+    memcpy(out, NODE_NAME, strnlen(NODE_NAME, NODE_NAME_LENGTH));
+}
+
+
 static void build_payload(struct sensor_payload_v1 *pl)
 {
     memset(pl, 0, sizeof(*pl));
 
+    // HEADER GEN INFOsazzzz
+    uint32_t epoch_s = 0;
+    uint16_t epoch_ms = 0;
+    time_now_epoch(&epoch_s, &epoch_ms);
+
+    pl->ver = 1; // payload version is 1 incase we change it down the line - for parsing
+    pl->uptime_ms= (uint32_t)k_uptime_get();
+    pl->epoch_s = epoch_s;
+    pl->epoch_ms = epoch_ms;
+    fill_node_name(pl->node_name);
+
+    // data
     pl->mlx_obj_c = s16_q(g_mlx.obj_c, 100.0f);
     pl->mlx_amb_c = s16_q(g_mlx.amb_c, 100.0f);
 
@@ -112,7 +107,7 @@ static void build_payload(struct sensor_payload_v1 *pl)
 
     //pl->par_shunt_v   = g_par.voltage;
    // pl->par_current_mA= g_par.current_mA;
-    pl->par_ppfd      = (int32_t)g_par.ppfd;
+    pl->par_ppfd      = (int32_t)lroundf(g_par.ppfd * 100.0f);
 
     pl->shortwave_w_m2 = s16_q(g_pyrano.shortwave_radiation, 100.0f);
 
@@ -121,8 +116,8 @@ static void build_payload(struct sensor_payload_v1 *pl)
     pl->longwave_w_m2      = s16_q(g_pyrgeo.longwave_radiation, 100.0f);
 
   
-    pl->weight_integer    = (int32_t)g_load.integer;
-    pl-> weight_fractional = (int32_t)g_load.fractional;
+    pl->weight_integer    = g_load.integer;
+    pl-> weight_fractional = g_load.fractional;
     
 }
 
@@ -245,6 +240,44 @@ static void sensor_stop_handler(struct k_work *work)
 
 static struct sensor_payload_v1 pl;
 
+
+static void debug_sensors(void)
+{
+    LOG_INF("MLX90614: obj=%.2f C, amb=%.2f C",
+            (double)g_mlx.obj_c,
+        (double)g_mlx.amb_c);
+
+    LOG_INF("SEN0546: T=%.2f C, RH=%.2f%%",
+            (double)g_sen.temp_c,
+            (double)g_sen.rh);
+
+    LOG_INF("Soil: V=%.3f V, R=%.0f ohm, T=%.2f C",
+        (double)g_soil.voltage,
+        (double)g_soil.resistance,
+        (double)g_soil.temp_c);
+
+    LOG_INF("Wind: V=%.3f V (RV), Temp (C)=%.2f, MPH=%.2f",
+        (double)g_wind.voltage,
+        (double)g_wind.temp_in_c,
+        (double)g_wind.mph);
+    
+    LOG_INF("PAR: V=%.3f V (shunt), I=%.2f mA, PPFD=%.2f µmol m^-2 s^-1",
+            (double)g_par.voltage,  (double)g_par.current_mA,  (double)g_par.ppfd);
+
+    LOG_INF("ADS1O15 CH0&1->SP-610: SW=%.6f W/m^2",
+            (double)g_pyrano.shortwave_radiation);
+
+    LOG_INF("SL-160 PYR: Temp in K=%.2f", (double)g_pyrgeo.temperature_in_K);
+
+    LOG_INF("ADS1O15 CH2&3->SL-610 Thermopile Signal: %.6f mV",
+            (double)g_pyrgeo.thermopile_signal_mv_diff);
+
+    LOG_INF("SL-160 PYR: Longwave radiation W/m2=%.2f", (double)g_pyrgeo.longwave_radiation);
+
+    LOG_INF("Weight: %d.%02d grams",g_load.integer, g_load.fractional);
+
+}
+
 /* Main periodic work: read sensors and send BLE packet */
 static void sensor_work_handler(struct k_work *work)
 {
@@ -256,19 +289,12 @@ static void sensor_work_handler(struct k_work *work)
         if (err && err != -EAGAIN) {
             LOG_WRN("MLX90614 read err %d", err);
         }
-        LOG_INF("MLX90614: obj=%.2f C, amb=%.2f C",
-                (double)g_mlx.obj_c,
-            (double)g_mlx.amb_c);
-
-
+       
         // Read SEN0546 TEMP/HUMIDITY -WORKS
         err = sen0546_read(&g_sen);
         if (err && err != -EAGAIN) {
             LOG_WRN("SEN0546 read err %d", err);
         }
-        LOG_INF("SEN0546: T=%.2f C, RH=%.2f%%",
-                (double)g_sen.temp_c,
-                (double)g_sen.rh);
 
         //Read soil thermistor (root temp) - WORKS
         err = soil_read(&g_soil);
@@ -276,38 +302,22 @@ static void sensor_work_handler(struct k_work *work)
             LOG_WRN("Soil read err %d", err);
         }
 
-        LOG_INF("Soil: V=%.3f V, R=%.0f ohm, T=%.2f C",
-                (double)g_soil.voltage,
-                (double)g_soil.resistance,
-                (double)g_soil.temp_c);
-
-
         //Read wind sensor - TEMP A BIT OFF BUT MPH GOOD NEED 2X VOLTAGE DIVIDER
         err = wind_read(&g_wind);
         if (err && err != -EAGAIN) {
             LOG_WRN("Wind read err %d", err);
         }
 
-        LOG_INF("Wind: V=%.3f V (RV), Temp (C)=%.2f, MPH=%.2f",
-            (double)g_wind.voltage,
-            (double)g_wind.temp_in_c,
-            (double)g_wind.mph);
-
-
         //  Read PAR (SQ-214) - SHUNT RESISTOR + POWER 7V
         err = par_read(&g_par);
         if (err && err != -EAGAIN) {
             LOG_WRN("PAR read err %d", err);
         }
-        LOG_INF("PAR: V=%.3f V (shunt), I=%.2f mA, PPFD=%.2f µmol m^-2 s^-1",
-                (double)g_par.voltage,  (double)g_par.current_mA,  (double)g_par.ppfd);
-
         
          // ADS1015 MEASUREMETNS
         //GET SP-610 DATA (SHORTWAVE RADIATION) - works
         get_sp610_pyranometer(&g_pyrano);
-        LOG_INF("ADS1O15 CH0&1->SP-610: SW=%.6f W/m^2",
-                (double)g_pyrano.shortwave_radiation);
+        
 
         // sl-610 THERMISTOR READING WORKS - RATIOMETRIC MEASUREMENT WITH EXCITATION
         err = sl160_thermistor_read(&g_pyrgeo);
@@ -315,13 +325,9 @@ static void sensor_work_handler(struct k_work *work)
             LOG_WRN("SL-610 read err %d", err);
         }
 
-        LOG_INF("SL-160 PYR: Temp in K=%.2f", (double)g_pyrgeo.temperature_in_K);
-
-       
         // GET SL-610 THERMOPILE DATA NEEDED FOR EQUATION LATER ON - works
         get_sl610_thermopile(&g_pyrgeo);
-        LOG_INF("ADS1O15 CH2&3->SL-610 Thermopile Signal: %.6f mV",
-                (double)g_pyrgeo.thermopile_signal_mv_diff);
+       
 
         float calculate_longwave = K1 * g_pyrgeo.thermopile_signal_mv_diff + (K2 *  STEPHAN_CONSTANT * (float)pow(g_pyrgeo.temperature_in_K, 4));
         if isfinite(calculate_longwave)
@@ -330,14 +336,12 @@ static void sensor_work_handler(struct k_work *work)
         } else {
             g_pyrgeo.longwave_radiation = NAN; // OR MAYBE NAN OR 0.0f??
         }
-       
-        LOG_INF("SL-160 PYR: Longwave radiation W/m2=%.2f", (double)g_pyrgeo.longwave_radiation);
 
         // Get data from load point
         measure(&g_load);
-        LOG_INF("Weight: %d.%06d grams",g_load.integer, g_load.fractional);
 
-
+        debug_sensors();
+       
         // if subscribed send with ble
         // map payload
         build_payload(&pl);
@@ -346,9 +350,12 @@ static void sensor_work_handler(struct k_work *work)
         lys_ble_notify(my_conn, &pl);
     }
 
-   //reschedule every 10s
-    k_work_schedule(&sensor_work, K_SECONDS(2));
+   //reschedule
+    k_work_schedule(&sensor_work, K_SECONDS(get_node_period()));
 }
+
+
+
 
 static void sensor_wq_init(void)
 {
@@ -470,6 +477,7 @@ static void exchange_func(struct bt_conn *conn, uint8_t att_err,
 
 
 int main(void)
+
 {
     LOG_INF("Sensor node starting (with BLE)");
 
@@ -506,18 +514,12 @@ int main(void)
         LOG_ERR("HX711 Load point init failed (%d)", err);
     }
 
+    // initialize relay gpio
     pump_init();
-    k_sleep(K_SECONDS(20));
-    pump_on();
-    k_sleep(K_SECONDS(20));
-    pump_off();
-    k_sleep(K_SECONDS(20));
-    pump_on();
-    k_sleep(K_SECONDS(20));
-    pump_off();
+    pump_schedule_init();
 
     //calibrate scale
-    //calibrate();
+    calibrate();
 
     //init ble
     err = bt_enable(NULL);

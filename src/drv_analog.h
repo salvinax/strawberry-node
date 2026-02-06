@@ -17,7 +17,7 @@ struct wind_sample {
 struct par_sample {
     float voltage;     // shunt voltage (V)
     float current_mA;  // loop current (mA)
-    int32_t ppfd;      // µmol m^-2 s^-1
+    float ppfd;      // µmol m^-2 s^-1
 };
 
 // struct pyr_sample {

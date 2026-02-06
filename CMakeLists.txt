@@ -13,7 +13,7 @@ target_sources(app PRIVATE
   src/drv_ads1015.c
   src/drv_mlx90614.c
   src/drv_analog.c
-  src/ble_lys.c
+  src/ble_util.c
   src/drv_sen0546.c
   src/drv_load_point.c
 )

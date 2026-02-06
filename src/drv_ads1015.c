@@ -447,6 +447,10 @@ void get_sp610_pyranometer(struct pyranometer_ADS_sample *p)
 
   float calibrated_radiation = (float)mv_signal  * 26.72f;//CALIBRATION CONSTANT FROM CERTIFICATE sn 1665
 
+  if (calibrated_radiation < 0) {
+    calibrated_radiation = 0;
+  }
+
   // convert sensor output to shortwave radiation in w/m^2
   p->shortwave_radiation = calibrated_radiation;
   

@@ -162,7 +162,7 @@ int par_read(struct par_sample *p)
 
 	p->voltage = v;
 	p->current_mA = i_mA;
-	p->ppfd = (int32_t)(ppfd + 0.5f);    
+	p->ppfd = ppfd;
 
     return 0;
 }

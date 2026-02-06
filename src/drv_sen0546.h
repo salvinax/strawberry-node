@@ -1,11 +1,8 @@
 #include <zephyr/device.h>
 #include <stdint.h>
 
-/* Two possible chip variants per DFRobot wiki:
- *  - CHT8305  @ 0x40: read 4 bytes from reg 0x00
- *  - CHT832X  @ 0x44: cmd 0x2400, wait ~60 ms, read 6 bytes (T[2]+CRC, RH[2]+CRC)
- * Ref: https://wiki.dfrobot.com/SKU_SEN0546_I2C_Temperature_and_Humidity_Sensor_Stainless_Steel_Shell
- */
+
+//https://wiki.dfrobot.com/SKU_SEN0546_I2C_Temperature_and_Humidity_Sensor_Stainless_Steel_Shell
 
 // we have the cht8305
 #define SEN0546_ADDR_CHT8305  0x40
