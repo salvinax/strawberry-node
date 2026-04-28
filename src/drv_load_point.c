@@ -14,7 +14,7 @@ LOG_MODULE_REGISTER(load_point, LOG_LEVEL_INF);
 
 const struct device *hx711_dev = DEVICE_DT_GET_ANY(avia_hx711);
 
-
+// Set sampling frequency
 static void set_rate(void)
 {
 	static struct sensor_value rate_val;
@@ -26,7 +26,7 @@ static void set_rate(void)
 			&rate_val);
 }
 
-
+// Initialize Device
 int hx711_probe_init(void)
 {
     if (hx711_dev == NULL) {
@@ -44,7 +44,7 @@ int hx711_probe_init(void)
     return 0;
 }
 
-
+// Get reading
 void measure(struct load_sample *l) {
 	static struct sensor_value weight;
 	int ret;
@@ -59,16 +59,20 @@ void measure(struct load_sample *l) {
 	}
 }
 
+// Calibrate load point/cell
 void calibrate(void) {
 	float calibration_weight = 55.99f; //known weight of object
 	
 	LOG_INF("Device is %p, name is %s", hx711_dev, hx711_dev->name);
 	LOG_INF("Calculating offset...");
+	
+	// tare
 	avia_hx711_tare(hx711_dev, 5);
 
 	LOG_INF("Waiting for known weight of %.2f grams...", (double)calibration_weight);
-
-	for (int i = 5; i >= 0; i--) {
+	
+	// wait for 15 seconds
+	for (int i = 15; i >= 0; i--) {
 		LOG_INF(" %d..", i);
 		k_msleep(1000);
 	}

@@ -10,24 +10,39 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/byteorder.h>
 
-// bluetooth + time logic + pump scheduling 
+// ble_uti.c - handles bluetooth + time logic + pump scheduling 
 LOG_MODULE_REGISTER(ble_lys, LOG_LEVEL_INF);
 
+// BLE notification flag
+// true when the pi subscribes to notifications
 static bool notify_enabled;
-static uint32_t next_pump_epoch_s;   // set by Pi
+
+// Set to true after valid time is received from the pi
+static bool time_synced = false;
+
+// Next scheduled pump time, sent by the  pi as Unix epoch seconds
+static uint32_t next_pump_epoch_s;
+
+// Delayed work items used to turn the pump ON/OFF at scheduled times
 static struct k_work_delayable pump_on_work;
 static struct k_work_delayable pump_off_work;
+
+// Pump ON duration and node sampling period - both sent by the Raspberry Pi.
 static uint16_t pump_duration_s;
 static uint16_t node_period_s;
 
+// BLE UUIDs
 struct bt_uuid_128 bt_uuid_lys_service = BT_UUID_INIT_128(BT_UUID_LYS_SERVICE_VAL);
 struct bt_uuid_128 bt_uuid_lys_char    = BT_UUID_INIT_128(BT_UUID_LYS_CHAR_VAL);
 struct bt_uuid_128 bt_uuid_lys_time   = BT_UUID_INIT_128(BT_UUID_TIME_SYNC); 
 
-
+// Current sensor payload stored before notification
 static struct sensor_payload_v1 g_cur_payload;
+
+// Stores synchronized Pi time + nRF52 uptime
 static struct time_values g_time;
 
+// Called when the Raspberry Pi enables or disables BLE notifications.
 static void ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     ARG_UNUSED(attr);
@@ -39,28 +54,32 @@ static void ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
     }
 }
 
-//tx_subscribed()
+//Helper function used by other code to check if BLE notifications are enabled.
 bool tx_subscribed(void)
 {
     return notify_enabled;
 }
 
-// populate time struct with updated pi time
+// Save the Raspberry Pi's current Unix time.
+// After this the nRF52 can estimate current epoch time using its uptime.
 void time_sync_from_pi(uint32_t epoch_s, uint16_t epoch_ms)
 {
-
-    uint16_t ms = (epoch_ms > 999) ? (epoch_ms % 1000) : epoch_ms;
-
-    g_time.epoch0_ms  = (int64_t)epoch_s * 1000 + (int64_t)ms;
+    // store pi epoch time in milliseconds
+    g_time.epoch0_ms  = (int64_t)epoch_s * 1000 + (int64_t)epoch_ms;
+    
+    // store local uptime 
     g_time.uptime0_ms = (int64_t)k_uptime_get();
+    time_synced = true;
 }
 
-
-
-
-// now that we time synced we can always generate timestamp
+// Estimate current Unix time using last pi time sync plus nRF52 uptime.
 bool time_now_epoch(uint32_t *out_epoch_s, uint16_t *out_epoch_ms)
 {
+    // only works after Pi time sync has happened
+    if (!time_synced) {
+        return false;
+    }
+
     int64_t now_ms = g_time.epoch0_ms + ((int64_t)k_uptime_get() - g_time.uptime0_ms);
     if (now_ms < 0) return false;
 
@@ -69,12 +88,14 @@ bool time_now_epoch(uint32_t *out_epoch_s, uint16_t *out_epoch_ms)
     return true;
 }
 
-// call this when Pi writes "next run time"
+// schedule the pump to turn ON 
 static void pump_set_next_epoch(uint32_t epoch_s)
 {
     next_pump_epoch_s = epoch_s;
 
-    uint32_t now_s; uint16_t now_ms;
+    uint32_t now_s; 
+    uint16_t now_ms;
+
     if (!time_now_epoch(&now_s, &now_ms)) {
         LOG_WRN("No valid time yet; cannot arm pump");
         return;
@@ -88,6 +109,12 @@ static void pump_set_next_epoch(uint32_t epoch_s)
 }
 
 
+// Pi writes a 14-byte payload:
+// bytes 0-3   = current epoch seconds
+// bytes 4-5   = current epoch milliseconds
+// bytes 6-9   = next pump start epoch seconds
+// bytes 10-11 = pump duration in seconds
+// bytes 12-13 = node sampling period in seconds
 
 static ssize_t time_sync_write(struct bt_conn *conn,
                                const struct bt_gatt_attr *attr,
@@ -98,30 +125,42 @@ static ssize_t time_sync_write(struct bt_conn *conn,
     ARG_UNUSED(conn);
     ARG_UNUSED(attr);
     ARG_UNUSED(flags);
-    
+
+    //payload must be 14 bytes
     if (len != 14) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
+
     // get pi payload
     const uint8_t *b = buf;
-    uint32_t epoch_s  = sys_get_le32(&b[0]);
-    uint16_t epoch_ms = sys_get_le16(&b[4]);
-    next_pump_epoch_s = sys_get_le32(&b[6]);
-    pump_duration_s =  sys_get_le16(&b[10]);
-    node_period_s =  sys_get_le16(&b[12]);
-    
+    uint32_t epoch_s     = sys_get_le32(&b[0]);
+    uint16_t epoch_ms    = sys_get_le16(&b[4]);
+    uint32_t next_pump_s = sys_get_le32(&b[6]);
+    uint16_t duration_s  = sys_get_le16(&b[10]);
+    uint16_t period_s    = sys_get_le16(&b[12]);
 
-    LOG_INF("EPOCH_S: %d, EPOCHS_MS: %d, NEXT: %d", (int)epoch_s, (int)epoch_ms, (int)next_pump_epoch_s);
+    next_pump_epoch_s = next_pump_s;
+    pump_duration_s   = duration_s;
+    node_period_s     = period_s;
+
+    LOG_INF("Time sync received");
+    LOG_INF("epoch_s=%u, epoch_ms=%u, next_pump=%u, duration=%u, period=%u",
+        epoch_s,
+        epoch_ms,
+        next_pump_epoch_s,
+        pump_duration_s,
+        node_period_s);
 
     // save time from pi
     time_sync_from_pi(epoch_s, epoch_ms);
 
-    // set next pump time 
+    // schedule next pump run
     pump_set_next_epoch(next_pump_epoch_s);
 
     return len;
 }
 
+//  Helper Function - Return node sampling period - sent by the pi during time sync
 uint16_t get_node_period(void){
     return node_period_s;
 }
@@ -129,15 +168,28 @@ uint16_t get_node_period(void){
 //  INTIALIZE PUMP CTRL PIN
 static const struct gpio_dt_spec pump =GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), pump_relay_gpios);
 
-// gpio set as active low in pcb but high in prototype
+
 void pump_init(void)
 {
-    gpio_pin_configure_dt(&pump, GPIO_OUTPUT_INACTIVE); // output pin and intialize to logic 0 (high)
+    int err;
+
+    if (!gpio_is_ready_dt(&pump)) {
+        LOG_ERR("Pump GPIO is not ready");
+        return -ENODEV;
+    }
+
+    // configure pump relay as output and start OFF
+    err = gpio_pin_configure_dt(&pump, GPIO_OUTPUT_INACTIVE);
+    if (err) {
+        LOG_ERR("Failed to configure pump GPIO: %d", err);
+        return err;
+    }
+
+    LOG_INF("Pump GPIO initialized");
+
+    return 0;
 }
 
-// void pump_on(void)  { gpio_pin_set_dt(&pump, 1); } // drives LOW
-// void pump_off(void) { gpio_pin_set_dt(&pump, 0); } // drives HIGH
-// pump is active high on prototype
 static void pump_on(void)  { 
     gpio_pin_set_dt(&pump, 1); 
     LOG_INF("PUMP ON");
@@ -149,7 +201,6 @@ static void pump_off(void) {
 }
 
 
-
 static void pump_off_fn(struct k_work *work)
 {
     pump_off();
@@ -159,30 +210,47 @@ static void pump_off_fn(struct k_work *work)
 static void pump_on_fn(struct k_work *work)
 {
     pump_on();
+    // turn pump off after set duration
     k_work_schedule(&pump_off_work, K_SECONDS(pump_duration_s));
      
-    // Schedule next day by default -> will have to update around hour change
-    //next_pump_epoch_s += 86400; // sec in 24 hours 
-    next_pump_epoch_s += 60; 
+    // Schedule next pump in 24 hours
+    next_pump_epoch_s += 86400; // sec in 24 hours 
+    // next_pump_epoch_s += 60; // for debug every minute
+    // add to payload; so user can set this from global hub
 
-    // reschedule
-    uint32_t now_s; uint16_t now_ms;
+    uint32_t now_s; 
+    uint16_t now_ms;
+
     if (time_now_epoch(&now_s, &now_ms)) {
         int64_t delay_ms = ((int64_t)next_pump_epoch_s - (int64_t)now_s) * 1000 - now_ms;
         if (delay_ms < 0) delay_ms = 0;
         k_work_schedule(&pump_on_work, K_MSEC(delay_ms));
+        LOG_INF("Next pump scheduled for epoch=%u, in %lld ms",
+                next_pump_epoch_s,
+                delay_ms);
+    } else {
+        LOG_WRN("Time not synced; cannot reschedule next pump");
     }
 }
 
+// initialize delayed work objects for pump scheduling
 void pump_schedule_init(void)
 {
      k_work_init_delayable(&pump_on_work, pump_on_fn);
     k_work_init_delayable(&pump_off_work, pump_off_fn);
 }
 
+/*
+ * GATT service definition.
+ *
+ * Includes:
+ * 1. Sensor payload characteristic:
+ *    - NOTIFY: Node can notify Pi with new payload
+ *
+ * 2. Time sync characteristic:
+ *    - WRITE: Pi sends time and pump scheduling information
+ */
 
-
-/* GATT service definition */
 BT_GATT_SERVICE_DEFINE(lys_svc,
     BT_GATT_PRIMARY_SERVICE(&bt_uuid_lys_service),
 
@@ -211,15 +279,28 @@ BT_GATT_SERVICE_DEFINE(lys_svc,
   
 );
 
-
+// Send current sensor payload using BLE notification
 int lys_ble_notify(struct bt_conn *g_conn, const struct sensor_payload_v1 *p)
 {
     int err;
 
+    if (!g_conn) {
+        return -ENOTCONN;
+    }
+
+     // Do not send notification if Pi has not subscribed
+    if (!notify_enabled) {
+        return 0;
+    }
+
     g_cur_payload = *p;
 
-    err = bt_gatt_notify(g_conn, &lys_svc.attrs[2],
-                         &g_cur_payload, sizeof(g_cur_payload));
+    err = bt_gatt_notify(g_conn, 
+                        &lys_svc.attrs[2],
+                        &g_cur_payload, 
+                        sizeof(g_cur_payload));
+                    
+
     if (err == -ENOTCONN || err == -EPIPE) {
         return 0;
     }

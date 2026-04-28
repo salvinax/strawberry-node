@@ -37,7 +37,7 @@ static int mlx_read_word(uint8_t reg, uint16_t *out)
     return 0;
 }
 
-
+// Initialize Device
 int mlx90614_init(void)
 {
     if (!device_is_ready(i2c_dev.bus)) {
@@ -52,7 +52,8 @@ int mlx90614_init(void)
     LOG_INF("MLX90614 probe OK (raw=0x%04X)", raw);
     return 0;
 }
-
+// Reads register 0x06 for ambient temperature.
+// Reads register 0x07 for object temperature.
 int mlx90614_read(struct mlx90614_sample *out)
 {
     
@@ -61,8 +62,8 @@ int mlx90614_read(struct mlx90614_sample *out)
     if (err) return err;
     err = mlx_read_word(REG_TO1, &obj_raw);
     if (err) return err;
-
-    // or scale it by 100 and store in int32
+    
+    // convert raw reading to celsius 
     float amb_c = ((float)amb_raw * 0.02f) - 273.15f;
     float obj_c = ((float)obj_raw * 0.02f) - 273.15f;
 

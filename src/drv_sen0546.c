@@ -10,7 +10,8 @@ LOG_MODULE_REGISTER(sen0546, LOG_LEVEL_INF);
 #define I2C_NODE DT_NODELABEL(sen0546)
 static const struct i2c_dt_spec i2c_dev = I2C_DT_SPEC_GET(I2C_NODE);
 
-//msb first
+// Probe register with manufacturer ID
+// Checks if I2C works and device is connected
 static int probe_cht8305(void)
 {   
     
@@ -21,14 +22,14 @@ static int probe_cht8305(void)
 
     if (!(rx[0] == 0x59 && rx[1] == 0x59)) {
         LOG_INF("NOT EXPECTED MANUFACTURER ID");
-        return -EIO; /* Not a CHT8305 */
+        return -EIO;
     }
 
     return 0;
    
 }
 
-
+// Initialize sensor 
 int sen0546_init(void)
 {
     if (!device_is_ready(i2c_dev.bus)) return -ENODEV;
@@ -45,6 +46,7 @@ int sen0546_init(void)
     return -ENODEV;
 }
 
+// Reads 4 bytes containing temperature and humidity data.
 int sen0546_read(struct sen0546_sample *out)
 {
 

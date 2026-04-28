@@ -29,6 +29,7 @@ static const char NODE_NAME[NODE_NAME_LENGTH] = "nodeA";
 
 static const struct device *const i2c0 = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 
+// i2c detection debug function
 static int i2c_scan_log(const struct device *i2c)
 {
     if (!device_is_ready(i2c)) {
@@ -74,12 +75,12 @@ static inline void fill_node_name(char out[NODE_NAME_LENGTH])
     memcpy(out, NODE_NAME, strnlen(NODE_NAME, NODE_NAME_LENGTH));
 }
 
-
+// Build BLE Payload
 static void build_payload(struct sensor_payload_v1 *pl)
 {
     memset(pl, 0, sizeof(*pl));
 
-    // HEADER GEN INFOsazzzz
+    // HEADER GENERAL INFO
     uint32_t epoch_s = 0;
     uint16_t epoch_ms = 0;
     time_now_epoch(&epoch_s, &epoch_ms);
@@ -121,6 +122,7 @@ static void build_payload(struct sensor_payload_v1 *pl)
     
 }
 
+// BLE Code was pulled from Nordic Academy Example
 struct bt_conn *my_conn = NULL;
 static struct k_work adv_work;
 
@@ -232,7 +234,9 @@ static void sensor_stop_handler(struct k_work *work)
 }
 
 // get coefficient from certificates
-// taken from SL-610-SS-1437
+// taken from SL-610-SS-1437 device
+// different for each sensor
+
 #define K1 8.658f // w/m2 per mV
 #define K2 1.210f // unitless
 
@@ -240,7 +244,7 @@ static void sensor_stop_handler(struct k_work *work)
 
 static struct sensor_payload_v1 pl;
 
-
+// Print Debug statement For Sensor Outputs 
 static void debug_sensors(void)
 {
     LOG_INF("MLX90614: obj=%.2f C, amb=%.2f C",
@@ -283,26 +287,28 @@ static void sensor_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
     int err;
+
     if (tx_subscribed()) {
-        //Read MLX90614 (IR temp) - WORKS
+
+        //Read MLX90614 (IR temp) 
         err = mlx90614_read(&g_mlx);
         if (err && err != -EAGAIN) {
             LOG_WRN("MLX90614 read err %d", err);
         }
        
-        // Read SEN0546 TEMP/HUMIDITY -WORKS
+        // Read SEN0546 TEMP/HUMIDITY 
         err = sen0546_read(&g_sen);
         if (err && err != -EAGAIN) {
             LOG_WRN("SEN0546 read err %d", err);
         }
 
-        //Read soil thermistor (root temp) - WORKS
+        //Read soil thermistor (root temp)
         err = soil_read(&g_soil);
         if (err && err != -EAGAIN) {
             LOG_WRN("Soil read err %d", err);
         }
 
-        //Read wind sensor - TEMP A BIT OFF BUT MPH GOOD NEED 2X VOLTAGE DIVIDER
+        //Read wind sensor - TEMP A BIT OFF BUT MPH GOOD NEED 2x VOLTAGE DIVIDER
         err = wind_read(&g_wind);
         if (err && err != -EAGAIN) {
             LOG_WRN("Wind read err %d", err);
@@ -314,39 +320,40 @@ static void sensor_work_handler(struct k_work *work)
             LOG_WRN("PAR read err %d", err);
         }
         
-         // ADS1015 MEASUREMETNS
-        //GET SP-610 DATA (SHORTWAVE RADIATION) - works
+        // ADS1015 MEASUREMENTS
+        //GET SP-610 DATA (SHORTWAVE RADIATION)
         get_sp610_pyranometer(&g_pyrano);
         
 
-        // sl-610 THERMISTOR READING WORKS - RATIOMETRIC MEASUREMENT WITH EXCITATION
+        // sl-610 THERMISTOR READING - RATIOMETRIC MEASUREMENT WITH EXCITATION
         err = sl160_thermistor_read(&g_pyrgeo);
         if (err && err != -EAGAIN) {
             LOG_WRN("SL-610 read err %d", err);
         }
 
-        // GET SL-610 THERMOPILE DATA NEEDED FOR EQUATION LATER ON - works
+        // GET SL-610 THERMOPILE DATA 
         get_sl610_thermopile(&g_pyrgeo);
-       
+        
 
         float calculate_longwave = K1 * g_pyrgeo.thermopile_signal_mv_diff + (K2 *  STEPHAN_CONSTANT * (float)pow(g_pyrgeo.temperature_in_K, 4));
         if isfinite(calculate_longwave)
         {
              g_pyrgeo.longwave_radiation = calculate_longwave;
         } else {
-            g_pyrgeo.longwave_radiation = NAN; // OR MAYBE NAN OR 0.0f??
+            g_pyrgeo.longwave_radiation = NAN;
         }
 
         // Get data from load point
         measure(&g_load);
 
+        // print sensor values for debug
         debug_sensors();
        
         // if subscribed send with ble
         // map payload
         build_payload(&pl);
 
-        // //send ble notification
+        // send ble notification
         lys_ble_notify(my_conn, &pl);
     }
 
@@ -486,7 +493,7 @@ int main(void)
 
     sensor_wq_init();
 
-    (void)i2c_scan_log(i2c0);
+    // initialize sensors
 
     err = sen0546_init();
     if (err) {
@@ -508,7 +515,7 @@ int main(void)
         LOG_ERR("Analog init failed (%d)", err);
     }
 
-    // load point
+    // initialize load point (scale)
     err = hx711_probe_init();
     if (err) {
         LOG_ERR("HX711 Load point init failed (%d)", err);
@@ -517,8 +524,6 @@ int main(void)
     // initialize relay gpio
     pump_init();
     pump_schedule_init();
-
-    //calibrate scale
     calibrate();
 
     //init ble
